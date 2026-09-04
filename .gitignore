@@ -1,0 +1,14 @@
+__pycache__/
+*.py[cod]
+*.pyo
+.Python
+*.so
+.idea/
+.vscode/
+*.pro.user
+*.orig
+.DS_Store
+Thumbs.db
+*.qgs~
+*.bak
+config/profiles.json
