@@ -12,8 +12,13 @@ from qgis.PyQt.QtWidgets import (
     QTableWidget, QTableWidgetItem,
 )
 
-from ..core.config_schema import sync_mdb_structure_fields_from_template
-from ..core.pipe_catalog import PIPELINE_TYPES, pipeline_display_name
+from ..core.config_schema import (
+    sync_mdb_structure_fields_from_template,
+    empty_mdb_pipe_structure,
+    order_pipe_codes,
+    mdb_structure_pipe_codes,
+)
+from ..core.pipe_catalog import PIPELINE_TYPES, PIPELINE_TYPE_LABELS, pipeline_display_name
 from ..core.access_field_types import (
     ACCESS_FIELD_TYPES, normalize_access_type,
     type_needs_size, type_needs_decimals,
@@ -200,6 +205,30 @@ class MdbFieldTable(QTableWidget):
         return fields
 
 
+def _parse_pipe_code_input(text):
+    raw = (text or "").strip()
+    if not raw:
+        return ""
+    for code, label in PIPELINE_TYPE_LABELS.items():
+        if raw == label or raw == pipeline_display_name(code):
+            return code
+    token = raw.split()[0]
+    token = token.split("(", 1)[0].strip().upper()
+    return token
+
+
+def _is_valid_pipe_code(code):
+    if not code or len(code) > 16:
+        return False
+    first = code[0]
+    if not (("A" <= first <= "Z") or ("0" <= first <= "9")):
+        return False
+    for ch in code:
+        if not (("A" <= ch <= "Z") or ("0" <= ch <= "9") or ch == "_"):
+            return False
+    return True
+
+
 class _StructureTabPage(QWidget):
     """单个 MDB 库结构配置页。"""
 
@@ -214,10 +243,6 @@ class _StructureTabPage(QWidget):
         form_box = QGroupBox("结构属性")
         form = QFormLayout()
         self.template_combo = QComboBox()
-        for code in PIPELINE_TYPES:
-            self.template_combo.addItem(code)
-        idx = self.template_combo.findText(self._structure.get("template_pipe") or "JS")
-        self.template_combo.setCurrentIndex(idx if idx >= 0 else 0)
         self.template_combo.currentTextChanged.connect(self._on_template_changed)
         self.independent_edit = QLineEdit()
         self.independent_edit.setPlaceholderText("逗号分隔，如 ZH,FZ")
@@ -227,7 +252,11 @@ class _StructureTabPage(QWidget):
         self.independent_edit.editingFinished.connect(self._on_independent_changed)
         form.addRow("模板管类：", self.template_combo)
         form.addRow("独立管类：", self.independent_edit)
-        tip = QLabel("非独立管类的点/线字段跟随模板管类，保存时自动同步；表名仍按各管类单独保存。")
+        tip = QLabel(
+            "新增结构默认带上全部管类。可按项目删除不需要的管类，也可再新增。"
+            "请先配置「MDB库渲染」；新增库结构时选择对应渲染组，内部编号与渲染组相同。"
+            "非独立管类的点/线字段跟随模板管类，保存时自动同步；表名仍按各管类单独保存。"
+        )
         tip.setWordWrap(True)
         form.addRow(tip)
         form_box.setLayout(form)
@@ -237,12 +266,19 @@ class _StructureTabPage(QWidget):
         left = QVBoxLayout()
         left.addWidget(QLabel("管线种类"))
         self.pipe_list = QListWidget()
-        for code in PIPELINE_TYPES:
-            item = QListWidgetItem()
-            item.setData(Qt.UserRole, code)
-            self.pipe_list.addItem(item)
         self.pipe_list.currentItemChanged.connect(self._on_pipe_selected)
-        left.addWidget(self.pipe_list)
+        left.addWidget(self.pipe_list, 1)
+        pipe_btns = QHBoxLayout()
+        add_pipe_btn = QPushButton("新增")
+        add_pipe_btn.setToolTip("从目录中选择，或直接输入管类代码")
+        add_pipe_btn.clicked.connect(self._on_add_pipe)
+        del_pipe_btn = QPushButton("删除选中")
+        del_pipe_btn.setToolTip("从本结构中移除该管类，保存后不再为其配置字段")
+        del_pipe_btn.clicked.connect(self._on_remove_pipe)
+        pipe_btns.addWidget(add_pipe_btn)
+        pipe_btns.addWidget(del_pipe_btn)
+        pipe_btns.addStretch()
+        left.addLayout(pipe_btns)
         body.addLayout(left, 1)
 
         right = QVBoxLayout()
@@ -294,12 +330,62 @@ class _StructureTabPage(QWidget):
         body.addLayout(right, 3)
         layout.addLayout(body)
 
-        self._update_pipe_list_labels()
+        self._fill_pipe_list(mdb_structure_pipe_codes(self._structure, default_all=True))
         if self.pipe_list.count() > 0:
             self.pipe_list.setCurrentRow(0)
 
+    def _pipe_codes(self):
+        codes = []
+        for i in range(self.pipe_list.count()):
+            item = self.pipe_list.item(i)
+            code = item.data(Qt.UserRole) if item is not None else None
+            if code:
+                codes.append(code)
+        return codes
+
+    def _fill_pipe_list(self, codes, select_code=None):
+        codes = order_pipe_codes(codes)
+        previous = self._current_pipe
+        self.pipe_list.blockSignals(True)
+        self.pipe_list.clear()
+        for code in codes:
+            item = QListWidgetItem()
+            item.setData(Qt.UserRole, code)
+            self.pipe_list.addItem(item)
+        self.pipe_list.blockSignals(False)
+        self._rebuild_template_combo()
+        self._update_pipe_list_labels()
+        target = select_code or previous
+        row = 0
+        if target:
+            for i in range(self.pipe_list.count()):
+                item = self.pipe_list.item(i)
+                if item is not None and item.data(Qt.UserRole) == target:
+                    row = i
+                    break
+        if self.pipe_list.count() > 0:
+            self.pipe_list.setCurrentRow(row)
+
+    def _rebuild_template_combo(self):
+        current = self._template_code()
+        if not current:
+            current = (self._structure.get("template_pipe") or "JS").strip().upper() or "JS"
+        codes = self._pipe_codes()
+        self.template_combo.blockSignals(True)
+        self.template_combo.clear()
+        for code in codes:
+            self.template_combo.addItem(code)
+        idx = self.template_combo.findText(current)
+        if idx < 0:
+            idx = self.template_combo.findText("JS")
+        if idx < 0 and codes:
+            idx = 0
+        self.template_combo.setCurrentIndex(idx if idx >= 0 else -1)
+        self.template_combo.blockSignals(False)
+        self._structure["template_pipe"] = self._template_code()
+
     def _template_code(self):
-        return (self.template_combo.currentText() or "JS").strip() or "JS"
+        return (self.template_combo.currentText() or "").strip().upper()
 
     def _independent_codes(self):
         return {
@@ -311,24 +397,96 @@ class _StructureTabPage(QWidget):
     def _is_follower(self, code):
         if not code:
             return False
-        if code == self._template_code():
+        template = self._template_code()
+        if code.upper() == template:
             return False
         return code.upper() not in self._independent_codes()
 
     def _update_pipe_list_labels(self):
         template = self._template_code()
         independent = self._independent_codes()
-        for i, code in enumerate(PIPELINE_TYPES):
+        for i in range(self.pipe_list.count()):
             item = self.pipe_list.item(i)
             if item is None:
                 continue
+            code = item.data(Qt.UserRole) or self._pipe_code_from_item(item)
             text = pipeline_display_name(code)
             if code == template:
                 text += " [模板]"
-            elif code.upper() in independent:
+            elif str(code).upper() in independent:
                 text += " [独立]"
             item.setText(text)
             item.setData(Qt.UserRole, code)
+
+    def _on_add_pipe(self):
+        existing = {c.upper() for c in self._pipe_codes()}
+        choices = [
+            pipeline_display_name(code)
+            for code in PIPELINE_TYPES
+            if code.upper() not in existing
+        ]
+        if choices:
+            text, ok = QInputDialog.getItem(
+                self, "新增管类",
+                "选择管类，或直接输入代码：",
+                choices, 0, True,
+            )
+        else:
+            text, ok = QInputDialog.getText(
+                self, "新增管类", "目录管类已全部加入，请输入新的管类代码：",
+            )
+        if not ok:
+            return
+        code = _parse_pipe_code_input(text)
+        if not _is_valid_pipe_code(code):
+            QMessageBox.warning(self, "提示", "管类代码无效。请使用字母、数字或下划线，例如 YS。")
+            return
+        if code in existing:
+            QMessageBox.warning(self, "提示", "管类「%s」已在本结构中。" % pipeline_display_name(code))
+            return
+        self.flush_current_pipe()
+        if "pipes" not in self._structure:
+            self._structure["pipes"] = {}
+        self._structure["pipes"][code] = empty_mdb_pipe_structure(code)
+        self._fill_pipe_list(self._pipe_codes() + [code], select_code=code)
+
+    def _on_remove_pipe(self):
+        item = self.pipe_list.currentItem()
+        if item is None:
+            QMessageBox.warning(self, "提示", "请先选择要删除的管类。")
+            return
+        code = item.data(Qt.UserRole) or self._pipe_code_from_item(item)
+        codes = self._pipe_codes()
+        if len(codes) <= 1:
+            QMessageBox.warning(self, "提示", "至少保留一种管类。")
+            return
+        reply = QMessageBox.question(
+            self, "确认删除",
+            "确定从本结构中移除管类「%s」？\n保存后该管类的表名和字段配置将不再保留。"
+            % pipeline_display_name(code),
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if reply != QMessageBox.Yes:
+            return
+        self.flush_current_pipe()
+        remaining = [c for c in codes if c != code]
+        pipes = self._structure.get("pipes") or {}
+        for key in list(pipes.keys()):
+            if str(key).strip().upper() == str(code).upper():
+                pipes.pop(key, None)
+        self._structure["pipes"] = pipes
+        if self._template_code() == code:
+            new_template = "JS" if "JS" in remaining else remaining[0]
+            self._structure["template_pipe"] = new_template
+        independent = [
+            x.strip()
+            for x in self.independent_edit.text().split(",")
+            if x.strip() and x.strip().upper() != str(code).upper()
+        ]
+        self.independent_edit.setText(",".join(independent))
+        self._current_pipe = None
+        self._fill_pipe_list(remaining, select_code=remaining[0] if remaining else None)
 
     def _on_template_changed(self, _text):
         if self._loading:
@@ -349,7 +507,9 @@ class _StructureTabPage(QWidget):
     def _on_pipe_selected(self, current, previous):
         if previous is not None and not self._loading:
             prev_code = previous.data(Qt.UserRole) or self._pipe_code_from_item(previous)
-            self._flush_pipe(prev_code)
+            pipes = self._structure.get("pipes") or {}
+            if prev_code in pipes:
+                self._flush_pipe(prev_code)
         if current is None:
             self._current_pipe = None
             return
@@ -363,9 +523,9 @@ class _StructureTabPage(QWidget):
         if role:
             return role
         text = item.text() if item is not None else ""
-        for code in PIPELINE_TYPES:
-            if text.endswith(code) or (")%s" % code) in text or text.startswith(code):
-                return code
+        parsed = _parse_pipe_code_input(text)
+        if parsed:
+            return parsed
         return (text.split(" ", 1)[0] if text else "").strip()
 
     def _load_pipe(self, code):
@@ -395,8 +555,8 @@ class _StructureTabPage(QWidget):
             point_fields = self.point_fields_table.to_fields()
             line_fields = self.line_fields_table.to_fields()
         self._structure["pipes"][code] = {
-            "point_table": self.point_table_edit.text().strip(),
-            "line_table": self.line_table_edit.text().strip(),
+            "point_table": self.point_table_edit.text().strip() or f"{code}POINT",
+            "line_table": self.line_table_edit.text().strip() or f"{code}LINE",
             "point_fields": point_fields,
             "line_fields": line_fields,
         }
@@ -407,13 +567,22 @@ class _StructureTabPage(QWidget):
 
     def to_structure(self, label):
         self.flush_current_pipe()
+        codes = self._pipe_codes()
+        pipes = self._structure.get("pipes") or {}
+        kept = {}
+        for code in codes:
+            kept[code] = pipes.get(code) or empty_mdb_pipe_structure(code)
+        self._structure["pipes"] = kept
         independent = [
             x.strip()
             for x in self.independent_edit.text().split(",")
-            if x.strip()
+            if x.strip() and x.strip().upper() in {c.upper() for c in codes}
         ]
+        template = self._template_code()
+        if template not in codes:
+            template = "JS" if "JS" in codes else (codes[0] if codes else "JS")
         self._structure["label"] = label
-        self._structure["template_pipe"] = self._template_code()
+        self._structure["template_pipe"] = template
         self._structure["independent_pipes"] = independent
         sync_mdb_structure_fields_from_template(self._structure)
         if self._current_pipe:
@@ -451,22 +620,41 @@ class MdbStructurePanel(QWidget):
             self.tabs.addTab(page, label)
 
     def _on_add_structure(self):
-        name, ok = QInputDialog.getText(self, "新增结构", "结构名称：")
+        dialog = self.parent()
+        if dialog is not None and hasattr(dialog, "render_panel"):
+            dialog.render_panel.flush_to_config()
+        unbound = self.shared_config.list_render_groups_without_structure()
+        if not unbound:
+            QMessageBox.warning(
+                self, "提示",
+                "没有可绑定的渲染组。\n"
+                "请先在「MDB库渲染」中新增结构组，再回到这里为它配置库结构。",
+            )
+            return
+        labels = ["%s（%s）" % (label, gid) for gid, label in unbound]
+        text, ok = QInputDialog.getItem(
+            self, "新增结构",
+            "选择已配置的「MDB库渲染」结构组：",
+            labels, 0, False,
+        )
         if not ok:
             return
-        name = (name or "").strip()
-        if not name:
-            QMessageBox.warning(self, "提示", "结构名称不能为空。")
+        try:
+            index = labels.index(text)
+        except ValueError:
             return
+        render_id = unbound[index][0]
         try:
             self.flush_to_config()
-            structure = self.shared_config.add_mdb_structure(name)
+            structure = self.shared_config.add_mdb_structure_for_render_group(render_id)
         except ValueError as exc:
             QMessageBox.warning(self, "提示", str(exc))
             return
         page = _StructureTabPage(structure, self)
-        idx = self.tabs.addTab(page, structure.get("label") or name)
+        idx = self.tabs.addTab(page, structure.get("label") or render_id)
         self.tabs.setCurrentIndex(idx)
+        if dialog is not None and hasattr(dialog, "structure_mapping_panel"):
+            dialog.structure_mapping_panel.reload_from_config()
 
     def _on_remove_structure(self):
         if self.tabs.count() <= 1:

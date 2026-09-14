@@ -53,6 +53,36 @@ def order_pipe_codes(codes):
     return ordered + extra
 
 
+def _pipe_dict_entry(pipes_src, code):
+    if not isinstance(pipes_src, dict) or not code:
+        return {}
+    if isinstance(pipes_src.get(code), dict):
+        return pipes_src.get(code)
+    wanted = str(code).strip().upper()
+    for key, val in pipes_src.items():
+        if str(key or "").strip().upper() == wanted and isinstance(val, dict):
+            return val
+    return {}
+
+
+def mdb_structure_pipe_codes(structure, default_all=True):
+    """本结构实际配置的管类。未写 pipes 时，新增结构默认使用全部目录管类。"""
+    pipes = (structure or {}).get("pipes")
+    if isinstance(pipes, dict) and pipes:
+        return order_pipe_codes(pipes.keys())
+    if default_all:
+        return list(PIPELINE_TYPES)
+    return []
+
+
+def _normalize_independent_pipes(raw, allowed_codes=None):
+    codes = order_pipe_codes(raw)
+    if allowed_codes is None:
+        return codes
+    allowed = {str(x).strip().upper() for x in allowed_codes if str(x).strip()}
+    return [c for c in codes if c in allowed]
+
+
 def empty_mdb_field(name="", mdb_type="TEXT", mdb_size="50", decimal_places=""):
     return {
         "name": name,
@@ -87,13 +117,20 @@ def empty_render_roles():
     }
 
 
-def empty_mdb_structure(structure_id, label, template_pipe="JS", independent_pipes=None):
-    pipes = {code: empty_mdb_pipe_structure(code) for code in PIPELINE_TYPES}
+def empty_mdb_structure(structure_id, label, template_pipe="JS", independent_pipes=None,
+                        pipe_codes=None):
+    codes = order_pipe_codes(pipe_codes) if pipe_codes else list(PIPELINE_TYPES)
+    if not codes:
+        codes = list(PIPELINE_TYPES)
+    template = (template_pipe or "JS").strip().upper() or "JS"
+    if template not in codes:
+        template = "JS" if "JS" in codes else codes[0]
+    pipes = {code: empty_mdb_pipe_structure(code) for code in codes}
     return {
         "id": structure_id,
         "label": label,
-        "template_pipe": template_pipe or "JS",
-        "independent_pipes": list(independent_pipes or []),
+        "template_pipe": template,
+        "independent_pipes": _normalize_independent_pipes(independent_pipes, codes),
         "render": empty_render_roles(),
         "pipes": pipes,
     }
@@ -185,10 +222,12 @@ def normalize_mdb_structure(raw, fallback_id="structure"):
     src = raw if isinstance(raw, dict) else {}
     sid = (src.get("id") or fallback_id).strip() or fallback_id
     label = (src.get("label") or sid).strip() or sid
-    template = (src.get("template_pipe") or "JS").strip() or "JS"
-    independent = [
-        str(x).strip() for x in (src.get("independent_pipes") or []) if str(x).strip()
-    ]
+    pipes_src = src.get("pipes") if isinstance(src.get("pipes"), dict) else {}
+    codes = mdb_structure_pipe_codes({"pipes": pipes_src}, default_all=True)
+    template = (src.get("template_pipe") or "JS").strip().upper() or "JS"
+    if template not in codes:
+        template = "JS" if "JS" in codes else (codes[0] if codes else "JS")
+    independent = _normalize_independent_pipes(src.get("independent_pipes"), codes)
     render_src = src.get("render") if isinstance(src.get("render"), dict) else {}
     render = empty_render_roles()
     for kind in ("point", "line"):
@@ -196,10 +235,9 @@ def normalize_mdb_structure(raw, fallback_id="structure"):
         for key in render[kind]:
             render[kind][key] = (part.get(key) or "").strip()
 
-    pipes_src = src.get("pipes") if isinstance(src.get("pipes"), dict) else {}
     pipes = {}
-    for code in PIPELINE_TYPES:
-        p = pipes_src.get(code) if isinstance(pipes_src.get(code), dict) else {}
+    for code in codes:
+        p = _pipe_dict_entry(pipes_src, code)
         pipes[code] = {
             "point_table": (p.get("point_table") or f"{code}POINT").strip(),
             "line_table": (p.get("line_table") or f"{code}LINE").strip(),
@@ -228,7 +266,7 @@ def sync_mdb_structure_fields_from_template(structure):
     各管类自己的点表名、线表名保持不变。
     """
     src = structure if isinstance(structure, dict) else {}
-    template = (src.get("template_pipe") or "JS").strip() or "JS"
+    template = (src.get("template_pipe") or "JS").strip().upper() or "JS"
     independent = {
         str(code).strip().upper()
         for code in (src.get("independent_pipes") or [])
@@ -241,13 +279,12 @@ def sync_mdb_structure_fields_from_template(structure):
     template_pipe = pipes.get(template) if isinstance(pipes.get(template), dict) else {}
     point_fields = copy.deepcopy(template_pipe.get("point_fields") or [])
     line_fields = copy.deepcopy(template_pipe.get("line_fields") or [])
-    for code in PIPELINE_TYPES:
+    for code in mdb_structure_pipe_codes(src, default_all=False):
         if code == template or code.upper() in independent:
             continue
         pipe = pipes.get(code)
         if not isinstance(pipe, dict):
-            pipe = empty_mdb_pipe_structure(code)
-            pipes[code] = pipe
+            continue
         pipe["point_fields"] = copy.deepcopy(point_fields)
         pipe["line_fields"] = copy.deepcopy(line_fields)
     return src
@@ -301,11 +338,12 @@ def normalize_structure_mapping_block(raw, structure_id):
         top_point = fallback["point"]
         top_line = fallback["line"]
 
-    # convert 仍按管类
+    # convert 仍按管类（只保留已有的，不补全目录）
     pipes = {}
-    for code in PIPELINE_TYPES:
-        if code in pipes_src:
-            pipes[code] = normalize_pipe_mapping(pipes_src[code])
+    for code in order_pipe_codes(pipes_src.keys()):
+        entry = _pipe_dict_entry(pipes_src, code)
+        if entry:
+            pipes[code] = normalize_pipe_mapping(entry)
 
     block = {
         "structure_id": sid,
@@ -353,7 +391,8 @@ def mapping_block_has_rows(block):
 def reverse_convert_mapping_block(block, source_id, target_id):
     """
     把 A→B 字段映射对调为 B→A。
-    仅保留源、目标字段都有值的行；对照规则在名称/代码之间对调，角度规则在弧度/角度之间对调。
+    仅保留源、目标字段都有值的行；对照规则在名称/代码之间对调，角度规则在弧度/角度之间对调，
+    时间规则在带分隔日期与紧凑日期之间对调。
     顺序号、井编号、坐标规则不反向（坐标在写入 geom 时使用，编号在写入时重新生成或对照更新）。
     """
     src = block if isinstance(block, dict) else {}
@@ -386,6 +425,10 @@ def reverse_convert_mapping_block(block, source_id, target_id):
                 rule_target = "degrees"
             elif rule_target == "degrees":
                 rule_target = "radians"
+            elif rule_target == "dashed":
+                rule_target = "compact"
+            elif rule_target == "compact":
+                rule_target = "dashed"
             elif not rule_set:
                 rule_target = ""
             result.append({

@@ -74,7 +74,7 @@ def _default_targets(name_header="名称"):
     ]
 
 
-BUILTIN_RULE_IDS = ("material", "dtype", "angle", "sequence", "wellno", "xyz")
+BUILTIN_RULE_IDS = ("material", "dtype", "angle", "sequence", "wellno", "xyz", "date")
 
 ANGLE_TARGETS = [
     {"id": "radians", "label": "弧度制"},
@@ -94,6 +94,11 @@ XYZ_TARGETS = [
     {"id": "x", "label": "X"},
     {"id": "y", "label": "Y"},
     {"id": "z", "label": "Z"},
+]
+
+DATE_TARGETS = [
+    {"id": "dashed", "label": "带分隔日期 2026-08-22"},
+    {"id": "compact", "label": "紧凑日期 20260822"},
 ]
 
 
@@ -149,6 +154,17 @@ def default_xyz_rule_set():
     }
 
 
+def default_date_rule_set():
+    return {
+        "id": "date",
+        "label": "时间",
+        "kind": "date",
+        "name_header": "",
+        "targets": [dict(item) for item in DATE_TARGETS],
+        "rows": [],
+    }
+
+
 def default_rule_sets():
     return [
         {
@@ -177,6 +193,7 @@ def default_rule_sets():
         default_sequence_rule_set(),
         default_wellno_rule_set(),
         default_xyz_rule_set(),
+        default_date_rule_set(),
     ]
 
 
@@ -226,6 +243,9 @@ def normalize_rule_set(raw, fallback_id="rule"):
     elif gid == "xyz":
         kind = "xyz"
         label = label or "坐标"
+    elif gid == "date":
+        kind = "date"
+        label = label or "时间"
 
     if kind == "angle":
         try:
@@ -288,6 +308,16 @@ def normalize_rule_set(raw, fallback_id="rule"):
             "kind": "xyz",
             "name_header": "",
             "targets": _normalize_targets(src.get("targets"), XYZ_TARGETS),
+            "rows": [],
+        }
+
+    if kind == "date":
+        return {
+            "id": gid,
+            "label": label or "时间",
+            "kind": "date",
+            "name_header": "",
+            "targets": _normalize_targets(src.get("targets"), DATE_TARGETS),
             "rows": [],
         }
 

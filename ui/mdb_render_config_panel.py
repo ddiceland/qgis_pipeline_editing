@@ -17,12 +17,16 @@ class _GroupFieldsForm(QWidget):
 
         tip = QLabel(
             "填写该结构 MDB 点/线表中用于图形渲染的字段名，以及点表/线表命名规则。"
-            "仅用于「MDB数据库 → 加载」显示，与入库/导出用的「MDB库结构」相互独立。"
+            "打开 MDB、加载上图都按这里匹配。内部编号在新增时按名称生成"
+            "（汉字转拼音，英文直接用），「MDB库结构」和结构映射必须使用同一编号。"
             "表命名中用 {code} 表示管类，例如 {code}POINT、{code}_POINT。"
             "「管线类型」可留空：留空时按表名识别管类；填写则仅用于合并图层分类着色，不会写回 MDB。"
         )
         tip.setWordWrap(True)
         layout.addWidget(tip)
+
+        self.id_label = QLabel()
+        layout.addWidget(self.id_label)
 
         cols = QHBoxLayout()
         point_form = QFormLayout()
@@ -66,6 +70,7 @@ class _GroupFieldsForm(QWidget):
 
     def load_group(self, group):
         self.group_id = group.get("id") or self.group_id
+        self.id_label.setText("内部编号：%s（库结构、结构映射与此相同）" % (self.group_id or "—"))
         point = group.get("point") or {}
         line = group.get("line") or {}
         point_pat, line_pat = self._default_patterns()
@@ -157,7 +162,8 @@ class MdbRenderConfigPanel(QWidget):
         label = self.tabs.tabText(idx)
         reply = QMessageBox.question(
             self, "确认删除",
-            f"确定删除结构组「{label}」？",
+            f"确定删除结构组「{label}」？\n"
+            "同编号的「MDB库结构」和结构映射不会自动删除。",
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.No,
         )

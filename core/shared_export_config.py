@@ -11,6 +11,7 @@ from .attribute_mappings import (
     empty_rule_set,
     normalize_rule_sets,
 )
+from .config_ids import align_render_structure_ids
 from .config_schema import (
     build_default_mdb_structures_and_mappings,
     empty_mdb_structure,
@@ -20,6 +21,7 @@ from .config_schema import (
     normalize_pg_table_schemas,
     normalize_structure_mappings,
 )
+from .pinyin_slug import unique_config_id
 from .pipe_catalog import PIPELINE_TYPES
 from .pipe_colors import build_default_pipe_colors
 
@@ -229,9 +231,19 @@ class SharedExportConfig:
         self.structure_mappings = mappings
         self._migrated = migrated
         self.mdb_render_groups = self._load_mdb_render_groups(loaded)
-        if rule_sets_migrated:
+        aligned = align_render_structure_ids(
+            self.mdb_render_groups, self.mdb_structures, self.structure_mappings
+        )
+        if aligned:
             self._migrated = True
         self._sync_pg_config_table_names_from_schemas()
+        if aligned or rule_sets_migrated:
+            try:
+                self.save()
+                if aligned or migrated:
+                    self._migrated = True
+            except OSError:
+                pass
 
     def _load_rule_sets(self, loaded):
         raw = loaded.get("rule_sets") if isinstance(loaded, dict) else None
@@ -243,7 +255,7 @@ class SharedExportConfig:
             }
             missing_builtin = any(
                 builtin not in have_ids
-                for builtin in ("angle", "sequence", "wellno")
+                for builtin in ("angle", "sequence", "wellno", "xyz", "date")
             )
             return normalize_rule_sets(raw), missing_builtin
         return build_rule_sets_from_legacy(
@@ -363,24 +375,35 @@ class SharedExportConfig:
                 return copy.deepcopy(s)
         return None
 
-    def add_mdb_structure(self, label):
-        name = (label or "").strip()
-        if not name:
-            raise ValueError("结构名称不能为空")
-        for s in self.mdb_structures:
-            if s.get("label") == name:
-                raise ValueError(f"结构名称已存在：{name}")
-        existing = {s.get("id") for s in self.mdb_structures}
-        idx = 1
-        while f"structure_{idx}" in existing:
-            idx += 1
-        sid = f"structure_{idx}"
-        st = empty_mdb_structure(sid, name, "JS", [])
+    def list_render_groups_without_structure(self):
+        """已有渲染组、尚未配置库结构的 (id, label)。"""
+        have = {(item.get("id") or "").strip() for item in self.mdb_structures}
+        result = []
+        for group in self.mdb_render_groups:
+            gid = (group.get("id") or "").strip()
+            if gid and gid not in have:
+                result.append((gid, group.get("label") or gid))
+        return result
+
+    def add_mdb_structure_for_render_group(self, render_group_id):
+        gid = (render_group_id or "").strip()
+        if not gid:
+            raise ValueError("请选择已配置的「MDB库渲染」结构组")
+        group = None
+        for item in self.mdb_render_groups:
+            if (item.get("id") or "").strip() == gid:
+                group = item
+                break
+        if group is None:
+            raise ValueError("未找到该「MDB库渲染」结构组，请先新增渲染组。")
+        if self.get_mdb_structure(gid):
+            raise ValueError("渲染组「%s」已有对应的库结构" % (group.get("label") or gid))
+        label = (group.get("label") or gid).strip() or gid
+        st = empty_mdb_structure(gid, label, "JS", [])
         self.mdb_structures.append(st)
-        # 同步空映射块
         for direction in ("export", "import"):
-            self.structure_mappings[direction][sid] = empty_structure_mapping_block(
-                sid, "JS", []
+            self.structure_mappings[direction][gid] = empty_structure_mapping_block(
+                gid, "JS", []
             )
         return st
 
@@ -401,6 +424,13 @@ class SharedExportConfig:
             self.structure_mappings[direction] = {}
         self.structure_mappings[direction][key] = _norm_block(block, key)
 
+    def get_mdb_render_group(self, group_id):
+        gid = (group_id or "").strip()
+        for group in self.mdb_render_groups:
+            if (group.get("id") or "").strip() == gid:
+                return copy.deepcopy(group)
+        return None
+
     def get_mdb_render_groups(self):
         """独立的 MDB 渲染结构组，供加载匹配使用。"""
         return copy.deepcopy(self.mdb_render_groups)
@@ -416,10 +446,7 @@ class SharedExportConfig:
             if (g.get("label") or "") == name:
                 raise ValueError(f"结构组名称已存在：{name}")
         existing = {g.get("id") for g in self.mdb_render_groups}
-        idx = 1
-        while f"group_{idx}" in existing:
-            idx += 1
-        gid = f"group_{idx}"
+        gid = unique_config_id(name, existing, fallback="group")
         group = _normalize_mdb_render_group(
             {"id": gid, "label": name}, fallback_id=gid
         )

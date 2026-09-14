@@ -85,10 +85,12 @@ def _xyz_from_wkt(wkt):
     return data_x, data_y, z
 
 
-def _map_export_row(source_row, mapping_rows, shared_config, row_seq, geom_col):
+def _map_export_row(source_row, mapping_rows, shared_config, row_seq, geom_col,
+                    field_types=None):
     wkt = source_row.get("__geom_wkt")
     gx, gy, gz = _xyz_from_wkt(wkt)
     geom_name = ident_name(geom_col)
+    types = field_types or {}
     values = {}
     for item in mapping_rows:
         dst = item.get("dst_field")
@@ -110,7 +112,8 @@ def _map_export_row(source_row, mapping_rows, shared_config, row_seq, geom_col):
                 continue
         raw = _row_get(source_row, src) if src else None
         values[dst] = apply_rule_value(
-            raw, rule_set, rule_target, shared_config, row_seq=row_seq
+            raw, rule_set, rule_target, shared_config, row_seq=row_seq,
+            mdb_type=types.get(ident_name(dst).upper()),
         )
     return values
 
@@ -277,11 +280,18 @@ def _write_kind(fmt, mdb_conn, gdb_writer, pipe_code, kind, table_name, source_r
                 mapping_rows, structure, shared_config, geom_col, progress_dialog=None):
     mapped_rows = []
     geom_wkts = []
+    fields = _target_fields(pipe_code, kind, structure, mapping_rows, [])
+    field_types = {
+        ident_name(item.get("name")).upper(): item.get("mdb_type")
+        for item in fields
+        if ident_name(item.get("name"))
+    }
     for index, source_row in enumerate(source_rows or [], start=1):
         if index == 1 or index % 25 == 0:
             _check_export_stop(progress_dialog)
         mapped = _map_export_row(
-            source_row, mapping_rows, shared_config, index, geom_col
+            source_row, mapping_rows, shared_config, index, geom_col,
+            field_types=field_types,
         )
         if not mapped:
             continue
@@ -290,7 +300,6 @@ def _write_kind(fmt, mdb_conn, gdb_writer, pipe_code, kind, table_name, source_r
         geom_wkts.append(source_row.get("__geom_wkt") or "")
 
     _check_export_stop(progress_dialog)
-    fields = _target_fields(pipe_code, kind, structure, mapping_rows, [])
     if fmt == "mdb":
         if not fields:
             raise RuntimeError(

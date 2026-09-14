@@ -1,7 +1,11 @@
 # -*- coding: utf-8 -*-
-"""按规则集转换字段值：对照表（名称/代码）、角度换算、顺序号。"""
+"""按规则集转换字段值：对照表（名称/代码）、角度换算、顺序号、时间。"""
 
+import datetime
 import math
+import re
+
+from .access_field_types import normalize_access_type
 
 
 def convert_angle_value(value, target, decimal_places=6):
@@ -66,7 +70,76 @@ def next_sequence_value(rule, row_seq):
     return start + seq - 1
 
 
-def apply_rule_value(value, rule_set_id, rule_target, shared_config, row_seq=None):
+def parse_date_value(value):
+    """把文本、日期对象解析成 date；无法识别则返回 None。"""
+    if value is None or value == "":
+        return None
+    if isinstance(value, datetime.datetime):
+        return value.date()
+    if isinstance(value, datetime.date):
+        return value
+    if hasattr(value, "toPyDateTime"):
+        try:
+            parsed = value.toPyDateTime()
+            if parsed is not None:
+                return parsed.date()
+        except Exception:
+            pass
+    if hasattr(value, "toPyDate"):
+        try:
+            parsed = value.toPyDate()
+            if parsed is not None:
+                return parsed
+        except Exception:
+            pass
+    text = str(value).strip()
+    if not text:
+        return None
+    text = text.replace("T", " ").split()[0]
+    text = text.replace("/", "-").replace(".", "-")
+    match = re.match(r"^(\d{4})-(\d{1,2})-(\d{1,2})$", text)
+    if match:
+        try:
+            return datetime.date(
+                int(match.group(1)), int(match.group(2)), int(match.group(3))
+            )
+        except ValueError:
+            return None
+    match = re.match(r"^(\d{4})年(\d{1,2})月(\d{1,2})日?$", text)
+    if match:
+        try:
+            return datetime.date(
+                int(match.group(1)), int(match.group(2)), int(match.group(3))
+            )
+        except ValueError:
+            return None
+    if re.fullmatch(r"\d{8}", text):
+        try:
+            return datetime.date(int(text[0:4]), int(text[4:6]), int(text[6:8]))
+        except ValueError:
+            return None
+    return None
+
+
+def convert_date_value(value, target, mdb_type=None):
+    """
+    把源日期转成目标格式。
+    target=compact：20260822；target=dashed：2026-08-22。
+    目标库结构为 DATETIME 时写出日期时间，否则写出文本。
+    """
+    parsed = parse_date_value(value)
+    if parsed is None:
+        return value
+    kind = normalize_access_type(mdb_type) if mdb_type else ""
+    if kind == "DATETIME":
+        return datetime.datetime.combine(parsed, datetime.time.min)
+    if target in ("compact", "yyyymmdd"):
+        return parsed.strftime("%Y%m%d")
+    return parsed.strftime("%Y-%m-%d")
+
+
+def apply_rule_value(value, rule_set_id, rule_target, shared_config, row_seq=None,
+                     mdb_type=None):
     if not rule_set_id:
         return value
     rule = None
@@ -81,12 +154,16 @@ def apply_rule_value(value, rule_set_id, rule_target, shared_config, row_seq=Non
         kind = "wellno"
     elif not kind and rule_set_id == "xyz":
         kind = "xyz"
+    elif not kind and rule_set_id == "date":
+        kind = "date"
     if kind == "sequence" or rule_target == "seq":
         return next_sequence_value(rule, row_seq)
     if kind == "wellno" or rule_set_id == "wellno" or rule_target in ("assign", "follow"):
         return value
     if kind == "xyz" or rule_set_id == "xyz" or rule_target in ("x", "y", "z"):
         return value
+    if kind == "date" or rule_set_id == "date" or rule_target in ("dashed", "compact", "yyyymmdd"):
+        return convert_date_value(value, rule_target or "dashed", mdb_type)
     if not rule_target:
         return value
     if kind == "angle" or rule_target in ("radians", "degrees"):

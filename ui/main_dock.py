@@ -1772,7 +1772,8 @@ class PipelineEditingDock(QDockWidget):
         if not group:
             return None, (
                 "未能识别当前 MDB 对应的「MDB库渲染」结构组。\n"
-                "请先在配置管理中完善渲染用字段后再转换。"
+                "请先到「配置管理 → MDB库渲染」配置表名与字段，"
+                "再配置「MDB库结构」和「结构映射 → 结构转换」。"
             )
         return group.get("id"), None
 
@@ -1807,14 +1808,32 @@ class PipelineEditingDock(QDockWidget):
             return
 
         if not same_structure:
+            source_group = self.shared_config.get_mdb_render_group(source_id) or {}
+            source_label = (
+                source_group.get("label")
+                or (self.shared_config.get_mdb_structure(source_id) or {}).get("label")
+                or source_id
+            )
+            target_st = self.shared_config.get_mdb_structure(target_id) or {}
+            target_label = target_st.get("label") or target_id
+            if not self.shared_config.get_mdb_structure(source_id):
+                QMessageBox.warning(
+                    self, "结构转换",
+                    "已识别渲染组「%s」，但还没有对应的「MDB库结构」。\n"
+                    "请到「配置管理 → MDB库结构」中选择该渲染组新增结构，"
+                    "再到「结构映射 → 结构转换」配置点表、线表字段映射并保存。"
+                    % source_label,
+                )
+                return
             pair_key = f"{source_id}__to__{target_id}"
             block = self.shared_config.get_mapping_block("convert", pair_key)
             if not mapping_has_field_rows(block):
                 QMessageBox.warning(
                     self, "结构转换",
-                    "未找到已配置的结构转换映射。\n"
+                    "未找到「%s → %s」的结构转换映射。\n"
                     "请到「配置管理 → 结构映射 → 结构转换」中"
-                    "选择对应的源结构/目标结构，配置点表、线表字段映射并保存。"
+                    "选择这对源/目标结构，配置点表、线表字段映射并保存。"
+                    % (source_label, target_label),
                 )
                 return
 

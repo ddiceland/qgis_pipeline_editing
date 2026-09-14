@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""规则集配置：材质、埋设方式、角度换算、顺序号及其他转换规则。"""
+"""规则集配置：材质、埋设方式、角度换算、顺序号、时间及其他转换规则。"""
 
 from qgis.PyQt.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QFormLayout, QLabel, QPushButton,
@@ -241,6 +241,36 @@ class _WellNoRulePage(QWidget):
         }
 
 
+class _DateRulePage(QWidget):
+    def __init__(self, rule_set, parent=None):
+        super().__init__(parent)
+        self.rule_id = rule_set.get("id") or "date"
+        self.targets = list(rule_set.get("targets") or [])
+        layout = QVBoxLayout(self)
+        tip = QLabel(
+            "时间是公式规则，不需要对照表。\n"
+            "在结构映射中选择本规则后：\n"
+            "· 转换目标选「带分隔日期 2026-08-22」：把源值写成带横线的日期\n"
+            "· 转换目标选「紧凑日期 20260822」：把源值写成八位数字\n"
+            "源值可以是文本（2026-08-22 / 20260822）或日期类型；"
+            "写出后的字段类型按目标「MDB库结构」走："
+            "配置为日期则写入日期，配置为文本则写入对应格式的字符串。"
+        )
+        tip.setWordWrap(True)
+        layout.addWidget(tip)
+        layout.addStretch()
+
+    def to_rule_set(self, label):
+        return {
+            "id": self.rule_id,
+            "label": label,
+            "kind": "date",
+            "name_header": "",
+            "targets": self.targets,
+            "rows": [],
+        }
+
+
 class _XyzRulePage(QWidget):
     def __init__(self, rule_set, parent=None):
         super().__init__(parent)
@@ -280,6 +310,8 @@ def _make_rule_page(rule_set, parent=None):
         return _WellNoRulePage(rule_set, parent)
     if kind == "xyz" or rid == "xyz":
         return _XyzRulePage(rule_set, parent)
+    if kind == "date" or rid == "date":
+        return _DateRulePage(rule_set, parent)
     return _LookupRulePage(rule_set, parent)
 
 
@@ -294,6 +326,7 @@ class RuleSetsPanel(QWidget):
             "规则集用于结构映射中的字段值转换。"
             "对照类规则（材质、埋设方式）先选规则集再选「中文名称」或「代码」；"
             "角度换算再选「弧度制」或「角度制」；"
+            "时间规则再选「带分隔日期」或「紧凑日期」（写出类型跟目标库结构走）；"
             "顺序号用于给目标字段生成从 1 起的整数编号；"
             "井编号用于入库时按视图表续编井号（未选则按原号导入）；"
             "坐标用于在映射中指定 X / Y / Z 字段，生成带高程的 geom。"

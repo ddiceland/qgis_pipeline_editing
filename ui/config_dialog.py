@@ -55,8 +55,8 @@ class ConfigDialog(QDialog):
         bottom = QHBoxLayout()
         tip = QLabel(
             "配置保存在本插件目录 config/profiles.json。"
-            "「规则集」供结构映射做字段值转换；「MDB库渲染」只用于加载显示；"
-            "「MDB库结构 / 结构映射」用于入库与导出。"
+            "先配「MDB库渲染」（产生内部编号），再配同编号的「MDB库结构」和「结构映射」。"
+            "「规则集」供结构映射做字段值转换。"
         )
         tip.setWordWrap(True)
         bottom.addWidget(tip, 1)
@@ -73,8 +73,8 @@ class ConfigDialog(QDialog):
                 shared_config.save()
                 QMessageBox.information(
                     self, "配置迁移",
-                    "已将旧导出结构自动迁移为「MDB库结构」与「结构映射」，"
-                    "并将「材质 / 埋设方式」合并为「规则集」。"
+                    "已整理配置：渲染组与库结构改为共用内部编号（汉字名称转为拼音），"
+                    "并迁移了对应的结构映射。"
                 )
             except OSError as exc:
                 QMessageBox.warning(self, "配置迁移", f"迁移后保存失败：{exc}")

@@ -56,8 +56,11 @@ def mapping_has_field_rows(block):
     return False
 
 
-def _apply_rule_value(value, rule_set, rule_target, shared_config, row_seq=None):
-    return apply_rule_value(value, rule_set, rule_target, shared_config, row_seq=row_seq)
+def _apply_rule_value(value, rule_set, rule_target, shared_config, row_seq=None,
+                      mdb_type=None):
+    return apply_rule_value(
+        value, rule_set, rule_target, shared_config, row_seq=row_seq, mdb_type=mdb_type
+    )
 
 
 def _group_by_id(groups, structure_id):
@@ -189,13 +192,16 @@ def _target_table_name(pipe_code, kind, structure, render_group):
     return f"{pipe_code}POINT" if kind == "point" else f"{pipe_code}LINE"
 
 
-def _map_row(source_row, mapping_rows, shared_config, row_seq=1):
+def _map_row(source_row, mapping_rows, shared_config, row_seq=1, field_types=None):
+    types = field_types or {}
     values = {}
     for item in mapping_rows:
         raw = _row_get(source_row, item["src_field"])
-        values[item["dst_field"]] = _apply_rule_value(
+        dst = item["dst_field"]
+        mdb_type = types.get(ident_name(dst).upper())
+        values[dst] = _apply_rule_value(
             raw, item.get("rule_set"), item.get("rule_target"), shared_config,
-            row_seq=row_seq,
+            row_seq=row_seq, mdb_type=mdb_type,
         )
     return values
 
@@ -281,15 +287,22 @@ def convert_mdb_to_new_file(src_path, out_path, source_id, target_id, shared_con
     same_structure = source_id == target_id
     if same_structure and fmt == "mdb":
         raise RuntimeError("目标结构不能与源结构相同")
+    source_structure = shared_config.get_mdb_structure(source_id) or {}
+    target_structure = shared_config.get_mdb_structure(target_id)
+    if not same_structure and not source_structure:
+        raise RuntimeError(
+            "已识别渲染组，但未配置对应的「MDB库结构」。"
+            "请先在「配置管理 → MDB库结构」中为该渲染组新增结构，"
+            "并配置「结构映射 → 结构转换」。"
+        )
     if not same_structure and not mapping_has_field_rows(block):
         raise RuntimeError(
-            f"未在「结构映射 → 结构转换」中配置「{source_id} → {target_id}」的字段映射。"
+            "未在「结构映射 → 结构转换」中配置「%s → %s」的字段映射。"
+            % (source_id, target_id)
         )
 
-    target_structure = shared_config.get_mdb_structure(target_id)
     if not target_structure:
         raise RuntimeError("未找到目标「MDB库结构」，请先在配置管理中完善后再转换。")
-    source_structure = shared_config.get_mdb_structure(source_id) or {}
     render_groups = shared_config.get_mdb_render_groups()
     source_render = _group_by_id(render_groups, source_id)
     target_render = _group_by_id(render_groups, target_id)
@@ -386,8 +399,16 @@ def convert_mdb_to_new_file(src_path, out_path, source_id, target_id, shared_con
                     continue
 
                 mapped_pairs = []
+                field_types = {
+                    ident_name(item.get("name")).upper(): item.get("mdb_type")
+                    for item in dst_fields
+                    if ident_name(item.get("name"))
+                }
                 for index, source_row in enumerate(source_rows, start=1):
-                    mapped = _map_row(source_row, mapping_rows, shared_config, row_seq=index)
+                    mapped = _map_row(
+                        source_row, mapping_rows, shared_config,
+                        row_seq=index, field_types=field_types,
+                    )
                     if mapped:
                         mapped = apply_decimals_to_values(
                             mapped, target_structure, pipe_code, kind
