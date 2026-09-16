@@ -49,20 +49,32 @@ def _pick_column(columns, candidates):
 
 
 def resolve_column(columns, configured_name):
-    """按配置字段名在表字段中解析实际列名（大小写不敏感）。"""
+    """按配置字段名在表字段中解析实际列名（大小写不敏感，用于读写）。"""
     name = (configured_name or "").strip()
     if not name:
         return None
     return _pick_column(columns, (name,))
 
 
-def columns_have_fields(columns, required_names):
+def resolve_column_exact(columns, configured_name):
+    """按配置字段名精确匹配列名（区分大小写），用于识别结构组。"""
+    name = (configured_name or "").strip()
+    if not name:
+        return None
+    for col in columns or []:
+        if (col or "").strip() == name:
+            return col
+    return None
+
+
+def columns_have_fields(columns, required_names, case_sensitive=False):
     """required_names 中非空项均须在 columns 中存在。"""
+    finder = resolve_column_exact if case_sensitive else resolve_column
     for name in required_names:
         name = (name or "").strip()
         if not name:
             continue
-        if resolve_column(columns, name) is None:
+        if finder(columns, name) is None:
             return False
     return True
 
@@ -203,6 +215,7 @@ def _sample_tables(discovered):
 def match_mdb_render_group(point_columns, line_columns, render_groups):
     """
     用样例点/线表字段匹配「MDB库渲染」结构组。
+    字段名区分大小写，以便分开西安（EXPNO）和老西安（ExpNo）。
     返回匹配到的 group dict；未匹配返回 None。
     """
     point_cols = list(point_columns or [])
@@ -218,6 +231,7 @@ def match_mdb_render_group(point_columns, line_columns, render_groups):
                 point_cfg.get("y_field"),
                 point_cfg.get("type_field"),
             ],
+            case_sensitive=True,
         )
         line_ok = columns_have_fields(
             line_cols,
@@ -226,6 +240,7 @@ def match_mdb_render_group(point_columns, line_columns, render_groups):
                 line_cfg.get("end_field"),
                 line_cfg.get("type_field"),
             ],
+            case_sensitive=True,
         )
         # 至少要能校验到已有的几何侧；若某侧样例表缺失则只校验另一侧
         if point_cols and line_cols:

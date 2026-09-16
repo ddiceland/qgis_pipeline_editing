@@ -93,6 +93,7 @@ python3 -m pip install psycopg2-binary pyodbc
 |------|------|
 | 材质 / 埋设方式 | 中文名称 ↔ 代码对照 |
 | 角度换算 | 角度 ↔ 弧度 |
+| 时间 | `2026-08-22` ↔ `20260822`；写出类型按目标库结构（日期或文本） |
 | 顺序号 | 按行生成序号 |
 | 井编号 | 入库时续编（重编井号）或对照更新 |
 | XYZ | 从坐标字段或几何取 X/Y/Z |
@@ -101,7 +102,9 @@ python3 -m pip install psycopg2-binary pyodbc
 
 ### 4.4 MDB库渲染
 
-**只用于打开/加载 MDB 时识别表、建几何、分类着色**，与入库/导出用的「MDB库结构」分开。
+**打开/加载 MDB 时识别表、建几何、分类着色**。新增结构组时按名称生成内部编号：汉字转拼音（如「秦华结构」→ `qinhua`），英文名直接用小写。正元 / 西安仍为 `zhengyuan` / `xian`。
+
+**先配渲染组，再配库结构**：后面的「MDB库结构」和结构映射都沿用这个编号。只配了渲染组也可以加载查看；未配渲染组就去做结构转换会提示先来这里配置。
 
 每组填写：
 
@@ -109,11 +112,15 @@ python3 -m pip install psycopg2-binary pyodbc
 - 点：井编号、X、Y；线：起点、终点（或连接方向）
 - **管线类型（可选）**：留空则按表名认管类；填写则用于合并图层着色，**不写回 MDB**
 
-内置两组：正元（如 `JSPOINT` / 物探点号）、西安（如 `JS_POINT` / EXPNO）。打开 MDB 时按表名+字段匹配其中一组，匹配不到会报错。
+内置两组：正元（如 `JS_POINT` / 物探点号）、西安（如 `JSPOINT` / EXPNO）。打开 MDB 时按表名+字段匹配其中一组，**字段名区分大小写**（用来分开西安 `EXPNO` 和老西安 `ExpNo`），匹配不到会报错。
 
 ### 4.5 MDB库结构
 
-入库、导出、结构转换的**目标/源表结构**：每管类点表名、线表名、字段类型与长度。可设模板管类（默认 JS）和独立管类（逗号分隔，如 `ZH,FZ`）。
+入库、导出、结构转换的**目标/源表结构**：每管类点表名、线表名、字段类型与长度。
+
+- **新增结构**时选择一个还没有库结构的「MDB库渲染」组，编号和名称与该组相同，不能再单独起一套 id。
+- 新增后默认带上目录中的全部管类。「管线种类」可再 **新增** / **删除选中**。
+- 可设模板管类（须是当前列表中的一种，默认 JS）和独立管类（逗号分隔，如 `ZH,FZ`）。独立管类须属于本结构已列出的管类。
 
 字段表四列：
 
@@ -136,7 +143,7 @@ python3 -m pip install psycopg2-binary pyodbc
 | **导入映射** | MDB 字段 → 总库字段（「数据入库」） |
 | **结构转换** | 源结构字段 → 目标结构字段（「结构转换」）；可生成反向映射 |
 
-映射行可挂规则集（材质代码、井编号、XYZ 等）。未配置有效字段行时，对应导出/入库/转换会拒绝执行。
+映射行可挂规则集（材质代码、时间、井编号、XYZ 等）。未配置有效字段行时，对应导出/入库/转换会拒绝执行。结构转换的源结构按打开的 MDB 匹配渲染组得到内部编号，须与这里选择的源结构编号一致。缺渲染组、缺库结构、缺映射会分别提示。
 
 ---
 
@@ -272,12 +279,80 @@ GDB：要素类带 OBJECTID 与 Shape，**不写坐标系**。本机没有可写
 | `structure_mappings` | 导出 / 导入 / 结构转换映射 |
 | `rule_sets` | 规则集 |
 
+旧版顶层 `zhengyuan`、`xian`、`material_config`、`dtype_config`、`custom_structures` **加载时仍会识别并迁移**，保存时不再写回。打开配置管理时若检测到迁移，会自动保存一次新格式。
+
+账号不在 JSON 里。首次若本插件还没有连接信息，会尝试从旧导出插件的 QSettings（`PipeExportPlugin/pg_connection`）复制一次。
+
 ---
 
-## 10. 注意事项
+## 10. 源码结构
+
+```text
+qgis_pipeline_editing/
+├── __init__.py                 # classFactory
+├── metadata.txt
+├── pipeline_editing_plugin.py  # 工具栏 / 菜单 / 停靠面板
+├── config/profiles.json
+├── resources/icon.png
+├── ui/                         # 界面
+│   ├── main_dock.py            # 主面板三页签
+│   ├── config_dialog.py        # 配置管理
+│   ├── export_progress_dialog.py  # 导出 / 导入进度、停止后自动关闭
+│   ├── db_connection_panel.py
+│   ├── mdb_render_config_panel.py
+│   ├── mdb_structure_panel.py
+│   ├── structure_mapping_panel.py
+│   ├── rule_sets_panel.py
+│   └── shared_config_panels.py # 管类颜色、对照表
+└── core/
+    ├── shared_export_config.py # profiles.json 读写与迁移入口
+    ├── config_ids.py           # 渲染组 / 库结构内部编号对齐
+    ├── pinyin_slug.py          # 名称转内部编号（拼音 / 英文）
+    ├── config_schema.py        # 结构/映射数据结构与旧配置迁移
+    ├── access_field_types.py   # Access 类型、文本长度、小数位
+    ├── mdb_decimals.py         # 按结构收口浮点精度
+    ├── pipe_catalog.py         # 管类目录
+    ├── pipe_type_filter.py     # 总库 ptype/gtype 与 FZ 过滤
+    ├── pg_connection.py        # QSettings 连接
+    ├── pg_connector.py         # 总库图层加载（图层组「总库」）
+    ├── pg_import.py            # MDB → PG 入库
+    ├── pg_schema_loader.py     # 拉表结构、刷新管类
+    ├── export_engine.py        # 裁剪导出
+    ├── spatial_export.py       # 范围内取点线（按井编号补端点）
+    ├── gdb_writer.py           # GDB / GPKG
+    ├── well_number.py          # 井号续编
+    ├── rule_apply.py / xyz_mapping.py / attribute_mappings.py
+    ├── txt_coord.py
+    └── mdb/
+        ├── mdb_connector.py    # Access ODBC
+        ├── layer_builder.py    # 加载合并图层
+        ├── layer_session.py    # 编辑快照与 _mdb_pipe
+        ├── mdb_saver.py        # 写回 MDB
+        ├── layer_refresh.py    # 保存后点线几何同步
+        ├── schema_detect.py    # 表名/结构组匹配
+        ├── fz_filter.py
+        ├── structure_convert.py
+        ├── geometry_builder.py / coord_utils.py / layer_style.py
+        └── ...
+```
+
+PostgreSQL 标识符用双引号、区分大小写；Access 必须用方括号（见 `core/sql_ident.py`）。
+
+---
+
+## 11. 注意事项
 
 - 总库点层默认隐藏，并非加载失败。图层组：「总库」「MDB库」「TXT坐标」。
 - 已有 MDB **不能靠本插件加新点、新线**；要新增请在库外处理或换新库再导入。
 - 保存不会改管类归属：要素仍写回 `_mdb_pipe` 对应的原表。
 - 入库缺管类字段会整批失败，避免半写入。
+- 使用 MDB 时先配「MDB库渲染」（产生内部编号），需要转换/入库/导出时再配同编号的「MDB库结构」和结构映射。未配渲染组不要做结构转换。
 - 绘制裁剪范围后务必导出前确认已选结构和格式；**全部成功**后范围会清空。中途停止导出则保留范围；停止导出 / 停止导入后进度窗会自动关掉，不必手动关。
+- 浮点精度以「MDB库结构 → 小数位数」为准；二进制浮点无法保证磁盘比特等于十进制，读出后再按同样位数显示应一致。
+- 不要把 `profiles.json` 提交到公开仓库（可能含库内表结构）；密码在 QSettings，备份配置时一并考虑。
+
+---
+
+## 12. 版本
+
+见 `metadata.txt`：`version=1.1.2`，`experimental=True`。

@@ -2,7 +2,7 @@
 name=管网编辑
 qgisMinimumVersion=3.18
 description=数据裁剪导出、MDB库编辑与入库、TXT管线编辑
-version=1.2.0
+version=1.2.1
 author=数据组
 email=you@example.com
 
